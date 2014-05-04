@@ -80,10 +80,14 @@ uint64_t BWReader::ReadRX()
     FILE* fp;
 	fp = fopen(rx_path, "r");
 	if (fp==nullptr) {
+		perror("fopen rx");
 		throw std::runtime_error(  "rx failed" );
 	}
 	
 	uint64_t ret = read_u64(fp);
+	
+	fclose(fp);
+	
 	return ret;
 }
 uint64_t BWReader::ReadTX() 
@@ -93,10 +97,14 @@ uint64_t BWReader::ReadTX()
 	
 		
 	if (fp==nullptr) {
+		perror("fopen tx");
 		throw std::runtime_error(  "tx failed" );
 	}
 	
 	uint64_t ret = read_u64(fp);
+	
+	fclose(fp);
+	
 	return ret;
 }
 
@@ -127,7 +135,7 @@ double BWReader::PercentageRX()
 	diff /= sample_time;
 	double ret = (double)diff;
 	
-	ret /= 0x20000; // to Mbps
+	ret /= 0x20000; // to_addr Mbps
 	ret /= (double)(rx_speed);
 	ret *= 100;
 	return ret;
@@ -141,7 +149,7 @@ double BWReader::PercentageTX()
 	diff /= sample_time;
 	double ret = (double)diff;
 	
-	ret /= 0x20000; // to Mbps
+	ret /= 0x20000; // to_addr Mbps
 	ret *= 100;
 	ret /= (double)(tx_speed);
 	return ret;
@@ -150,46 +158,75 @@ double BWReader::PercentageTX()
 
 int main(int argc, char *argv[])
 {
-	const char * str = getCmdOption(argv, argv + argc, "-i");
-	const char * iface_name = str?str:"eth0";
 	
-	if (argc<=1) {
+	if (argc!=7) {
 		printf(
-			"Options:\n"
-			" -i iface     Measurement interface\n"
-			" -d delay     Delay between measurements\n"
-			" -rx num      Maximum RX speed (Mbps)\n"
-			" -tx num      Maximum TX speed (Mbps)\n"
-			" -o iface     Output Bind IP\n"
-			" -h hosts     Output interfaces, separate with \",\"\n"
-			" -p ports     Output ports, separate with \",\"\n"
-		);
+			"Usage: %s iface delay rx tx ip port\n"
+			"delay  seconds between measurements\n"
+			"rx,tx  maximum interface rx/tx speed (Mbps)\n"
+			"ip     remote ip\n"
+			"port   remote port\n"
+			,argv[0]);
 		return 1;
 	}
-	str = getCmdOption(argv, argv + argc, "-d");
+	
+	const char * iface_name = argv[1];
+	
+	const char * str = argv[2];
 	int delay=1;
 	if (str) {
 		delay = std::stoi(str);
 	}
 
-	str = getCmdOption(argv, argv + argc, "-rx");
+	str = argv[3];
 	int rxs=100;
 	if (str) {
 		rxs = std::stoi(str);
 	}
-	str = getCmdOption(argv, argv + argc, "-tx");
+	str = argv[4];
 	int txs=100;
 	if (str) {
 		txs = std::stoi(str);
 	}
 
+
+	const char * ip = argv[5];
+	const char * port = argv[6];
+
+	int	sd, ret;
+	struct	sockaddr_in to_addr;
+	
+	sd = socket( AF_INET, SOCK_DGRAM, 0 );
+	if( sd < 0 ) 
+	{
+		throw std::runtime_error(  "socket create failed" );
+	}
+
+	memset( &to_addr, 0, sizeof(to_addr) );
+	to_addr.sin_family = AF_INET;
+	to_addr.sin_port = htons(atoi(port));
+	to_addr.sin_addr.s_addr = inet_addr(ip);
+
+	char sendbuf[32];
+	socklen_t structlen;
+
+
+
 	printf("Reading %s every %d seconds. Max RX: %dMbps. Max TX: %dMbps\n",iface_name,delay,rxs,txs);
 	BWReader iface(iface_name,delay,rxs,txs);
 	while (true) {
 		iface.MeasureRXTX();
-		float prx = (float)iface.PercentageRX();
-		float ptx = (float)iface.PercentageTX();
-		printf("rx: %.4f, tx: %.4f\n",prx,ptx);
+		double rxp = iface.PercentageRX();
+		double txp = iface.PercentageTX();
+		
+		printf("rx: %.3f%%, tx: %.3f%%\n",rxp,txp);
+		sendbuf[0]=(char)round(rxp>120?120:rxp<0?0:rxp);
+		sendbuf[1]=(char)round(txp>120?120:txp<0?0:txp);
+		ret = sendto(sd,sendbuf,2,0,(struct sockaddr *)&to_addr,sizeof(to_addr));
+		if ( ret < 0 )
+		{
+			printf("Send fail: %d\n",ret);
+		}
 	}
 
 	return 0;
